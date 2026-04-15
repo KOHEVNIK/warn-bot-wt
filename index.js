@@ -155,7 +155,7 @@ client.on('interactionCreate', async interaction => {
   const hasStaff = interaction.member?.roles?.cache?.has(cfg.staffRoleId) || 
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
   
-  // ========== КОМАНДА /warnpanel (панель управления) ==========
+  // ========== КОМАНДА /warnpanel ==========
   if (interaction.isCommand() && interaction.commandName === 'warnpanel') {
     if (!hasStaff) {
       return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
@@ -192,7 +192,6 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: '❌ Канал должен быть текстовым!', ephemeral: true });
     }
     
-    // Сохраняем данные
     const sendData = {
       channelId: channel.id,
       text: text,
@@ -214,7 +213,7 @@ client.on('interactionCreate', async interaction => {
     });
   }
   
-  // ========== КНОПКИ ПАНЕЛИ ==========
+  // ========== КНОПКИ ==========
   if (interaction.isButton()) {
     const id = interaction.customId;
     
@@ -284,9 +283,7 @@ client.on('interactionCreate', async interaction => {
     if (id.startsWith('remove_warn_')) {
       const userId = id.split('_')[2];
       
-      if (!hasStaff) {
-        return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      }
+      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       await interaction.deferReply({ ephemeral: true });
       
@@ -334,9 +331,7 @@ client.on('interactionCreate', async interaction => {
     if (id.startsWith('close_ticket_')) {
       const channelId = id.replace('close_ticket_', '');
       
-      if (!hasStaff) {
-        return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
-      }
+      if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
       await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
       setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
@@ -385,7 +380,12 @@ client.on('interactionCreate', async interaction => {
           avatar: sendData.avatarUrl
         });
         
-        await webhook.send({ content: sendData.text || null });
+        // Отправляем Embed с текстом
+        const embed = new EmbedBuilder()
+          .setColor(0x2B2D31)
+          .setDescription(sendData.text || '​');
+        
+        await webhook.send({ embeds: [embed] });
         await webhook.delete();
         
         pendingSends.delete(userId);
@@ -650,7 +650,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Модальное окно для фото в /send
+    // Модальное окно для фото в /send (С РАМКОЙ)
     if (id.startsWith('send_modal_')) {
       const userId = id.replace('send_modal_', '');
       const photoUrl = interaction.fields.getTextInputValue('photo_url');
@@ -671,23 +671,36 @@ client.on('interactionCreate', async interaction => {
         });
         
         const files = [];
+        let fileName = 'image.png';
         
         if (photoUrl.startsWith('http://') || photoUrl.startsWith('https://')) {
-          files.push(photoUrl);
+          const response = await fetch(photoUrl);
+          const buffer = Buffer.from(await response.arrayBuffer());
+          const contentType = response.headers.get('content-type') || '';
+          
+          if (contentType.includes('png')) fileName = 'image.png';
+          else if (contentType.includes('webp')) fileName = 'image.webp';
+          else if (contentType.includes('gif')) fileName = 'image.gif';
+          
+          files.push({ attachment: buffer, name: fileName });
         } else {
           if (fs.existsSync(photoUrl)) {
-            files.push({
-              attachment: photoUrl,
-              name: photoUrl.split('/').pop() || photoUrl.split('\\').pop() || 'image.png'
-            });
+            fileName = photoUrl.split('/').pop() || photoUrl.split('\\').pop() || 'image.png';
+            files.push({ attachment: photoUrl, name: fileName });
           } else {
             await webhook.delete();
             return interaction.editReply('❌ Файл не найден!');
           }
         }
         
+        // Создаём Embed с фото в рамке и текстом
+        const embed = new EmbedBuilder()
+          .setColor(0x2B2D31) // Тёмно-серая рамка
+          .setImage(`attachment://${fileName}`) // Фото внутри рамки
+          .setDescription(sendData.text || null); // Текст под фото (или сверху)
+        
         await webhook.send({
-          content: sendData.text || null,
+          embeds: [embed],
           files: files
         });
         
