@@ -113,9 +113,6 @@ client.once('ready', async () => {
     if (g) await cleanExpiredWarns(g);
   }, 10 * 60 * 1000);
   
-  // Восстановление таймеров событий (если бот перезапустился)
-  // (Для простоты не сохраняем события между перезапусками)
-  
   // Регистрация команд
   try {
     await client.application.commands.set([
@@ -271,7 +268,8 @@ client.on('interactionCreate', async interaction => {
     // Время напоминания (за 15 минут)
     const reminderTime = new Date(eventTime.getTime() - 15 * 60 * 1000);
     
-    await interaction.deferReply();
+    // Отвечаем эфемерно (видно только создателю)
+    await interaction.reply({ content: '✅ Событие создается...', ephemeral: true });
     
     // Создаём кнопки
     const row = new ActionRowBuilder().addComponents(
@@ -280,7 +278,7 @@ client.on('interactionCreate', async interaction => {
       new ButtonBuilder().setCustomId(`event_maybe`).setLabel('Возможно').setEmoji('❓').setStyle(ButtonStyle.Secondary)
     );
     
-    // Создаём Embed
+    // Создаём Embed (БЕЗ "Создал:" и БЕЗ timestamp)
     const embed = new EmbedBuilder()
       .setTitle('📅 СОБЫТИЕ')
       .setDescription(`### ${description}`)
@@ -292,11 +290,12 @@ client.on('interactionCreate', async interaction => {
         { name: '❌ Не придут (0)', value: '―', inline: true },
         { name: '❓ Возможно (0)', value: '―', inline: true }
       )
-      .setColor(0x3498DB)
-      .setFooter({ text: `Создал: ${interaction.user.tag}` })
-      .setTimestamp();
+      .setColor(0x3498DB);
     
     const message = await interaction.channel.send({ embeds: [embed], components: [row] });
+    
+    // Обновляем эфемерное сообщение со ссылкой
+    await interaction.editReply({ content: `✅ **Событие создано!** ${message.url}`, ephemeral: true });
     
     // Сохраняем событие
     const eventId = message.id;
@@ -342,8 +341,6 @@ client.on('interactionCreate', async interaction => {
         setTimeout(() => events.delete(eventId), 60 * 60 * 1000);
       }, timeUntilReminder);
     }
-    
-    await interaction.editReply({ content: `✅ Событие создано! ${message.url}`, ephemeral: true });
   }
   
   // ========== КНОПКИ ==========
@@ -386,7 +383,7 @@ client.on('interactionCreate', async interaction => {
         ? [...event.maybe].map(id => `<@${id}>`).join('\n') 
         : '―';
       
-      // Обновляем Embed
+      // Обновляем Embed (БЕЗ timestamp)
       const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
         .setFields(
           { name: '📅 Дата', value: event.dateStr, inline: true },
