@@ -1,5 +1,6 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType, Collection } = require('discord.js');
 const http = require('http');
+const fs = require('fs');
 
 const client = new Client({
   intents: [
@@ -9,6 +10,9 @@ const client = new Client({
     GatewayIntentBits.GuildMembers
   ]
 });
+
+// Хранилище для временных данных отправки
+const pendingSends = new Collection();
 
 // ========== ОЧИСТКА ПРОСРОЧЕННЫХ ВАРНОВ ==========
 async function cleanExpiredWarns(guild) {
@@ -128,7 +132,17 @@ client.once('ready', async () => {
           { name: 'user', description: 'Пользователь', type: 6, required: true }
         ]
       },
-      { name: 'warnpanel', description: 'Создать панель управления варнами' }
+      { name: 'warnpanel', description: 'Создать панель управления варнами' },
+      {
+        name: 'send',
+        description: 'Отправить сообщение от имени бота в канал',
+        options: [
+          { name: 'channel', description: 'Канал для отправки', type: 7, required: true },
+          { name: 'text', description: 'Текст сообщения', type: 3, required: false },
+          { name: 'name', description: 'Имя отправителя (по умолч. Winter Team)', type: 3, required: false },
+          { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
+        ]
+      }
     ]);
     console.log('✅ Команды зарегистрированы!');
   } catch (error) {
@@ -152,7 +166,6 @@ client.on('interactionCreate', async interaction => {
       .setDescription('**Выберите действие:**')
       .setColor(0xFFA500);
     
-    // Горизонтальная панель
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('panel_warn').setLabel('Выдать варн').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('panel_unwarn').setLabel('Снять варны').setEmoji('✅').setStyle(ButtonStyle.Success),
@@ -164,11 +177,48 @@ client.on('interactionCreate', async interaction => {
     await interaction.reply({ content: '✅ Панель создана!', ephemeral: true });
   }
   
+  // ========== КОМАНДА /send ==========
+  if (interaction.isCommand() && interaction.commandName === 'send') {
+    if (!hasStaff) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    const channel = interaction.options.getChannel('channel');
+    const text = interaction.options.getString('text') || '';
+    const customName = interaction.options.getString('name') || 'Winter Team';
+    const avatarUrl = interaction.options.getString('avatar') || client.user.displayAvatarURL();
+    
+    if (!channel.isTextBased()) {
+      return interaction.reply({ content: '❌ Канал должен быть текстовым!', ephemeral: true });
+    }
+    
+    // Сохраняем данные
+    const sendData = {
+      channelId: channel.id,
+      text: text,
+      customName: customName,
+      avatarUrl: avatarUrl
+    };
+    
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`send_photo_${interaction.user.id}`).setLabel('Прикрепить фото').setEmoji('📷').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`send_now_${interaction.user.id}`).setLabel('Отправить без фото').setEmoji('📤').setStyle(ButtonStyle.Success)
+    );
+    
+    pendingSends.set(interaction.user.id, sendData);
+    
+    await interaction.reply({
+      content: `📤 **Отправка в ${channel}**\nТекст: ${text || '(без текста)'}\nИмя: ${customName}\n\nНажмите кнопку ниже:`,
+      components: [row],
+      ephemeral: true
+    });
+  }
+  
   // ========== КНОПКИ ПАНЕЛИ ==========
   if (interaction.isButton()) {
     const id = interaction.customId;
     
-    // Выдать варн (только стафф)
+    // Выдать варн
     if (id === 'panel_warn') {
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
@@ -189,7 +239,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Снять варны (только стафф)
+    // Снять варны
     if (id === 'panel_unwarn') {
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
@@ -200,7 +250,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Обжалование (для всех)
+    // Обжалование
     if (id === 'panel_appeal') {
       const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
@@ -215,7 +265,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Отработка (для всех)
+    // Отработка
     if (id === 'panel_workoff') {
       const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
@@ -230,10 +280,9 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Снять варн (в тикете обжалования/отработки)
+    // Снять варн (в тикете)
     if (id.startsWith('remove_warn_')) {
-      const parts = id.split('_');
-      const userId = parts[2];
+      const userId = id.split('_')[2];
       
       if (!hasStaff) {
         return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -292,13 +341,77 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ content: '🔒 Закрываю...', ephemeral: true });
       setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
     }
+    
+    // Кнопка "Прикрепить фото" для /send
+    if (id.startsWith('send_photo_')) {
+      const userId = id.replace('send_photo_', '');
+      if (interaction.user.id !== userId) {
+        return interaction.reply({ content: '❌ Это не ваша команда!', ephemeral: true });
+      }
+      
+      const sendData = pendingSends.get(userId);
+      if (!sendData) {
+        return interaction.reply({ content: '❌ Данные не найдены! Вызовите /send заново.', ephemeral: true });
+      }
+      
+      const modal = new ModalBuilder().setCustomId(`send_modal_${userId}`).setTitle('📷 Прикрепить фото');
+      
+      const photoInput = new TextInputBuilder().setCustomId('photo_url').setLabel('Ссылка на фото или путь к файлу').setPlaceholder('https://i.imgur.com/... или C:\\photo.png').setStyle(TextInputStyle.Paragraph).setRequired(true);
+      
+      modal.addComponents(new ActionRowBuilder().addComponents(photoInput));
+      
+      await interaction.showModal(modal);
+    }
+    
+    // Кнопка "Отправить без фото" для /send
+    if (id.startsWith('send_now_')) {
+      const userId = id.replace('send_now_', '');
+      if (interaction.user.id !== userId) {
+        return interaction.reply({ content: '❌ Это не ваша команда!', ephemeral: true });
+      }
+      
+      const sendData = pendingSends.get(userId);
+      if (!sendData) {
+        return interaction.reply({ content: '❌ Данные не найдены!', ephemeral: true });
+      }
+      
+      await interaction.deferUpdate();
+      
+      try {
+        const channel = await client.channels.fetch(sendData.channelId);
+        
+        const webhook = await channel.createWebhook({
+          name: sendData.customName,
+          avatar: sendData.avatarUrl
+        });
+        
+        await webhook.send({ content: sendData.text || null });
+        await webhook.delete();
+        
+        pendingSends.delete(userId);
+        
+        await interaction.editReply({
+          content: `✅ Сообщение отправлено в ${channel} от имени **${sendData.customName}**!`,
+          components: [],
+          ephemeral: true
+        });
+        
+      } catch (error) {
+        console.error('❌ Ошибка:', error);
+        await interaction.editReply({
+          content: `❌ Ошибка: ${error.message}`,
+          components: [],
+          ephemeral: true
+        });
+      }
+    }
   }
   
   // ========== ОБРАБОТКА МОДАЛЬНЫХ ОКОН ==========
   if (interaction.isModalSubmit()) {
     const id = interaction.customId;
     
-    // Снятие варнов (через кнопку)
+    // Снятие варнов
     if (id === 'unwarn_modal') {
       const userInput = interaction.fields.getTextInputValue('user');
       
@@ -534,6 +647,61 @@ client.on('interactionCreate', async interaction => {
       } catch (error) {
         console.error('❌ Ошибка:', error);
         await interaction.editReply({ content: '❌ Произошла ошибка!', ephemeral: true });
+      }
+    }
+    
+    // Модальное окно для фото в /send
+    if (id.startsWith('send_modal_')) {
+      const userId = id.replace('send_modal_', '');
+      const photoUrl = interaction.fields.getTextInputValue('photo_url');
+      
+      const sendData = pendingSends.get(userId);
+      if (!sendData) {
+        return interaction.reply({ content: '❌ Данные не найдены!', ephemeral: true });
+      }
+      
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const channel = await client.channels.fetch(sendData.channelId);
+        
+        const webhook = await channel.createWebhook({
+          name: sendData.customName,
+          avatar: sendData.avatarUrl
+        });
+        
+        const files = [];
+        
+        if (photoUrl.startsWith('http://') || photoUrl.startsWith('https://')) {
+          files.push(photoUrl);
+        } else {
+          if (fs.existsSync(photoUrl)) {
+            files.push({
+              attachment: photoUrl,
+              name: photoUrl.split('/').pop() || photoUrl.split('\\').pop() || 'image.png'
+            });
+          } else {
+            await webhook.delete();
+            return interaction.editReply('❌ Файл не найден!');
+          }
+        }
+        
+        await webhook.send({
+          content: sendData.text || null,
+          files: files
+        });
+        
+        await webhook.delete();
+        
+        pendingSends.delete(userId);
+        
+        await interaction.editReply({
+          content: `✅ Сообщение с фото отправлено в ${channel} от имени **${sendData.customName}**!`
+        });
+        
+      } catch (error) {
+        console.error('❌ Ошибка:', error);
+        await interaction.editReply(`❌ Ошибка: ${error.message}`);
       }
     }
   }
