@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits, ChannelType } = require('discord.js');
 const http = require('http');
 
 const client = new Client({
@@ -152,23 +152,15 @@ client.on('interactionCreate', async interaction => {
       .setDescription('**Выберите действие:**')
       .setColor(0xFFA500);
     
-    const row1 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_warn').setLabel('Выдать варн').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
-    );
-    
-    const row2 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_unwarn').setLabel('Снять варны').setEmoji('✅').setStyle(ButtonStyle.Success)
-    );
-    
-    const row3 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('panel_appeal').setLabel('Обжалование').setEmoji('📝').setStyle(ButtonStyle.Primary)
-    );
-    
-    const row4 = new ActionRowBuilder().addComponents(
+    // Горизонтальная панель
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('panel_warn').setLabel('Выдать варн').setEmoji('⚠️').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('panel_unwarn').setLabel('Снять варны').setEmoji('✅').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('panel_appeal').setLabel('Обжалование').setEmoji('📝').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('panel_workoff').setLabel('Отработка').setEmoji('✅').setStyle(ButtonStyle.Success)
     );
     
-    await interaction.channel.send({ embeds: [embed], components: [row1, row2, row3, row4] });
+    await interaction.channel.send({ embeds: [embed], components: [row] });
     await interaction.reply({ content: '✅ Панель создана!', ephemeral: true });
   }
   
@@ -197,7 +189,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Снять варны (только стафф) - открывает окно для ввода ID
+    // Снять варны (только стафф)
     if (id === 'panel_unwarn') {
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
@@ -208,7 +200,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Обжалование (для всех) - автоматически определяет пользователя
+    // Обжалование (для всех)
     if (id === 'panel_appeal') {
       const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
@@ -223,7 +215,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Отработка (для всех) - автоматически определяет пользователя
+    // Отработка (для всех)
     if (id === 'panel_workoff') {
       const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
@@ -238,7 +230,58 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Закрыть тикет (для стаффа)
+    // Снять варн (в тикете обжалования/отработки)
+    if (id.startsWith('remove_warn_')) {
+      const parts = id.split('_');
+      const userId = parts[2];
+      
+      if (!hasStaff) {
+        return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
+      }
+      
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        if (!member) return interaction.editReply('❌ Пользователь не найден!');
+        
+        const removedCount = await removeAllWarns(member);
+        
+        if (removedCount === 0) {
+          return interaction.editReply(`ℹ️ У ${member.user.tag} нет активных предупреждений.`);
+        }
+        
+        const originalEmbed = interaction.message.embeds[0];
+        const newEmbed = EmbedBuilder.from(originalEmbed)
+          .setColor(0x00FF00)
+          .setFooter({ text: `✅ Варны сняты модератором ${interaction.user.tag}` });
+        
+        await interaction.message.edit({ embeds: [newEmbed], components: [] });
+        
+        await interaction.editReply({ content: `✅ Снято ${removedCount} варнов с ${member.user.tag}!`, ephemeral: true });
+        await interaction.channel.send(`✅ **Варны сняты!** Модератор: <@${interaction.user.id}>`);
+        
+        const logEmbed = new EmbedBuilder().setTitle('✅ Варны сняты').setColor(0x00FF00).addFields(
+          { name: '👤 Пользователь', value: `<@${member.id}> (${member.user.tag})`, inline: true },
+          { name: '👮 Модератор', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
+          { name: '📊 Количество', value: `${removedCount}`, inline: true }
+        );
+        
+        await sendLog(interaction.guild, logEmbed);
+        
+        try {
+          await member.send({ embeds: [new EmbedBuilder().setTitle('✅ Предупреждения сняты').setColor(0x00FF00).setDescription(`**Модератор:** ${interaction.user.tag}\n**Снято варнов:** ${removedCount}`)] });
+        } catch (error) {}
+        
+        setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+        
+      } catch (error) {
+        console.error('❌ Ошибка:', error);
+        await interaction.editReply('❌ Произошла ошибка!');
+      }
+    }
+    
+    // Закрыть тикет
     if (id.startsWith('close_ticket_')) {
       const channelId = id.replace('close_ticket_', '');
       
@@ -412,6 +455,7 @@ client.on('interactionCreate', async interaction => {
           .setDescription(`**Пользователь:** <@${user.id}>\n\n**Активные варны:**\n${warnsList}\n\n**Причина обжалования:**\n> ${reason}`);
         
         const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`remove_warn_${user.id}`).setLabel('Снять варны').setEmoji('✅').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId(`close_ticket_${appealChannel.id}`).setLabel('Закрыть').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
         );
         
@@ -476,6 +520,7 @@ client.on('interactionCreate', async interaction => {
           .setDescription(`**Пользователь:** <@${user.id}>\n\n**Активные варны:**\n${warnsList}\n\n**Что сделано:**\n> ${reason}`);
         
         const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`remove_warn_${user.id}`).setLabel('Снять варны').setEmoji('✅').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId(`close_ticket_${appealChannel.id}`).setLabel('Закрыть').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
         );
         
