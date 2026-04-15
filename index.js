@@ -135,10 +135,10 @@ client.once('ready', async () => {
       { name: 'warnpanel', description: 'Создать панель управления варнами' },
       {
         name: 'send',
-        description: 'Отправить сообщение от имени бота в канал',
+        description: 'Отправить сообщение от имени бота в канал (поддерживает # ## ### заголовки)',
         options: [
           { name: 'channel', description: 'Канал для отправки', type: 7, required: true },
-          { name: 'text', description: 'Текст сообщения', type: 3, required: false },
+          { name: 'text', description: 'Текст сообщения (можно # Заголовок)', type: 3, required: false },
           { name: 'name', description: 'Имя отправителя (по умолч. Winter Team)', type: 3, required: false },
           { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
         ]
@@ -201,13 +201,16 @@ client.on('interactionCreate', async interaction => {
     
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`send_photo_${interaction.user.id}`).setLabel('Прикрепить фото').setEmoji('📷').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`send_now_${interaction.user.id}`).setLabel('Отправить без фото').setEmoji('📤').setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`send_now_${interaction.user.id}`).setLabel('Отправить сейчас').setEmoji('📤').setStyle(ButtonStyle.Success)
     );
     
     pendingSends.set(interaction.user.id, sendData);
     
+    // Показываем превью текста с заголовками
+    const previewText = text || '(без текста)';
+    
     await interaction.reply({
-      content: `📤 **Отправка в ${channel}**\nТекст: ${text || '(без текста)'}\nИмя: ${customName}\n\nНажмите кнопку ниже:`,
+      content: `📤 **Отправка в ${channel}**\nИмя: **${customName}**\n\n**Превью:**\n${previewText}\n\nНажмите кнопку ниже:`,
       components: [row],
       ephemeral: true
     });
@@ -358,7 +361,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Кнопка "Отправить без фото" для /send
+    // Кнопка "Отправить сейчас" для /send
     if (id.startsWith('send_now_')) {
       const userId = id.replace('send_now_', '');
       if (interaction.user.id !== userId) {
@@ -380,7 +383,7 @@ client.on('interactionCreate', async interaction => {
           avatar: sendData.avatarUrl
         });
         
-        // Отправляем Embed с текстом
+        // Отправляем Embed с текстом (поддерживает # ## ### заголовки)
         const embed = new EmbedBuilder()
           .setColor(0x2B2D31)
           .setDescription(sendData.text || '​');
@@ -650,7 +653,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Модальное окно для фото в /send (С РАМКОЙ)
+    // Модальное окно для фото в /send (С РАМКОЙ И ЗАГОЛОВКАМИ)
     if (id.startsWith('send_modal_')) {
       const userId = id.replace('send_modal_', '');
       const photoUrl = interaction.fields.getTextInputValue('photo_url');
@@ -693,11 +696,11 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
-        // Создаём Embed с фото в рамке и текстом
+        // Создаём Embed с фото в рамке и текстом (поддерживает # ## ###)
         const embed = new EmbedBuilder()
-          .setColor(0x2B2D31) // Тёмно-серая рамка
-          .setImage(`attachment://${fileName}`) // Фото внутри рамки
-          .setDescription(sendData.text || null); // Текст под фото (или сверху)
+          .setColor(0x2B2D31)
+          .setImage(`attachment://${fileName}`)
+          .setDescription(sendData.text || null);
         
         await webhook.send({
           embeds: [embed],
