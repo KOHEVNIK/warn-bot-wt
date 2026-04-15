@@ -90,13 +90,28 @@ async function sendLog(guild, embed) {
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
   
-  // Анимация статуса "winter team" ↔ "№1"
-  const statuses = ['winter team', '№1'];
-  let statusIndex = 0;
+  // Статус бота — всегда ❤️
+  client.user.setActivity('❤️', { type: 2 });
   
-  setInterval(() => {
-    client.user.setActivity(statuses[statusIndex], { type: 3 });
-    statusIndex = (statusIndex + 1) % statuses.length;
+  // Анимация никнейма "Winter Team" ↔ "№1" (каждые 5 секунд)
+  const nicknames = ['Winter Team', '№1'];
+  let nickIndex = 0;
+  
+  setInterval(async () => {
+    try {
+      const cfg = getConfig();
+      const guild = client.guilds.cache.get(cfg.guildId);
+      if (guild) {
+        const me = guild.members.me;
+        if (me) {
+          await me.setNickname(nicknames[nickIndex]);
+          console.log(`📝 Никнейм изменён на: ${nicknames[nickIndex]}`);
+        }
+      }
+      nickIndex = (nickIndex + 1) % nicknames.length;
+    } catch (error) {
+      console.error('❌ Ошибка смены никнейма:', error);
+    }
   }, 5000);
   
   const cfg = getConfig();
@@ -231,13 +246,11 @@ client.on('interactionCreate', async interaction => {
     const timeStr = interaction.options.getString('time');
     const description = interaction.options.getString('description');
     
-    // Проверка формата даты (ДД.ММ.ГГГГ)
     const dateMatch = dateStr.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
     if (!dateMatch) {
       return interaction.reply({ content: '❌ Неверный формат даты! Используйте ДД.ММ.ГГГГ (например, 25.04.2026)', ephemeral: true });
     }
     
-    // Проверка формата времени (ЧЧ:ММ)
     const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
     if (!timeMatch) {
       return interaction.reply({ content: '❌ Неверный формат времени! Используйте ЧЧ:ММ (например, 20:00)', ephemeral: true });
@@ -257,7 +270,6 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: '❌ Неверное время! Часы: 0-23, минуты: 0-59', ephemeral: true });
     }
     
-    // Создаём дату события (МСК = UTC+3)
     const eventTime = new Date(Date.UTC(year, month - 1, day, hours - 3, minutes, 0));
     
     const now = new Date();
@@ -265,20 +277,16 @@ client.on('interactionCreate', async interaction => {
       return interaction.reply({ content: '❌ Нельзя создать событие в прошлом!', ephemeral: true });
     }
     
-    // Время напоминания (за 15 минут)
     const reminderTime = new Date(eventTime.getTime() - 15 * 60 * 1000);
     
-    // Отвечаем эфемерно (видно только создателю)
     await interaction.reply({ content: '✅ Событие создается...', ephemeral: true });
     
-    // Создаём кнопки
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`event_accept`).setLabel('Приду').setEmoji('✅').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`event_decline`).setLabel('Не приду').setEmoji('❌').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`event_maybe`).setLabel('Возможно').setEmoji('❓').setStyle(ButtonStyle.Secondary)
     );
     
-    // Создаём Embed (БЕЗ "Создал:" и БЕЗ timestamp)
     const embed = new EmbedBuilder()
       .setTitle('📅 СОБЫТИЕ')
       .setDescription(`### ${description}`)
@@ -294,10 +302,8 @@ client.on('interactionCreate', async interaction => {
     
     const message = await interaction.channel.send({ embeds: [embed], components: [row] });
     
-    // Обновляем эфемерное сообщение со ссылкой
     await interaction.editReply({ content: `✅ **Событие создано!** ${message.url}`, ephemeral: true });
     
-    // Сохраняем событие
     const eventId = message.id;
     events.set(eventId, {
       messageId: message.id,
@@ -314,7 +320,6 @@ client.on('interactionCreate', async interaction => {
       embed: embed
     });
     
-    // Таймер на напоминание
     const timeUntilReminder = reminderTime.getTime() - Date.now();
     if (timeUntilReminder > 0) {
       setTimeout(async () => {
@@ -337,7 +342,6 @@ client.on('interactionCreate', async interaction => {
           });
         }
         
-        // Удаляем событие из хранилища через час после напоминания
         setTimeout(() => events.delete(eventId), 60 * 60 * 1000);
       }, timeUntilReminder);
     }
@@ -358,12 +362,10 @@ client.on('interactionCreate', async interaction => {
       
       const userId = interaction.user.id;
       
-      // Удаляем пользователя из всех списков
       event.accept.delete(userId);
       event.decline.delete(userId);
       event.maybe.delete(userId);
       
-      // Добавляем в нужный список
       if (id === 'event_accept') {
         event.accept.add(userId);
       } else if (id === 'event_decline') {
@@ -372,7 +374,6 @@ client.on('interactionCreate', async interaction => {
         event.maybe.add(userId);
       }
       
-      // Формируем списки для отображения
       const acceptList = event.accept.size > 0 
         ? [...event.accept].map(id => `<@${id}>`).join('\n') 
         : '―';
@@ -383,7 +384,6 @@ client.on('interactionCreate', async interaction => {
         ? [...event.maybe].map(id => `<@${id}>`).join('\n') 
         : '―';
       
-      // Обновляем Embed (БЕЗ timestamp)
       const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
         .setFields(
           { name: '📅 Дата', value: event.dateStr, inline: true },
@@ -402,7 +402,6 @@ client.on('interactionCreate', async interaction => {
     }
     
     // === КНОПКИ ВАРНОВ ===
-    // Выдать варн
     if (id === 'panel_warn') {
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
@@ -423,7 +422,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Снять варны
     if (id === 'panel_unwarn') {
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
       
@@ -434,7 +432,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Обжалование
     if (id === 'panel_appeal') {
       const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
@@ -449,7 +446,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Отработка
     if (id === 'panel_workoff') {
       const warnRoles = interaction.member.roles.cache.filter(r => r.name.startsWith('⚠️ Warn ('));
       
@@ -464,7 +460,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Снять варн (в тикете)
     if (id.startsWith('remove_warn_')) {
       const userId = id.split('_')[2];
       
@@ -512,7 +507,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Закрыть тикет
     if (id.startsWith('close_ticket_')) {
       const channelId = id.replace('close_ticket_', '');
       
@@ -523,7 +517,6 @@ client.on('interactionCreate', async interaction => {
     }
     
     // === КНОПКИ /send ===
-    // Прикрепить фото
     if (id.startsWith('send_photo_')) {
       const userId = id.replace('send_photo_', '');
       if (interaction.user.id !== userId) {
@@ -544,7 +537,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Отправить сейчас
     if (id.startsWith('send_now_')) {
       const userId = id.replace('send_now_', '');
       if (interaction.user.id !== userId) {
@@ -596,7 +588,6 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isModalSubmit()) {
     const id = interaction.customId;
     
-    // Снятие варнов
     if (id === 'unwarn_modal') {
       const userInput = interaction.fields.getTextInputValue('user');
       
@@ -638,7 +629,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Выдача варна
     if (id === 'warn_modal') {
       const userInput = interaction.fields.getTextInputValue('user');
       const daysInput = interaction.fields.getTextInputValue('days');
@@ -705,7 +695,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Обжалование
     if (id === 'appeal_modal') {
       const reason = interaction.fields.getTextInputValue('reason');
       
@@ -770,7 +759,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Отработка
     if (id === 'workoff_modal') {
       const reason = interaction.fields.getTextInputValue('reason');
       
@@ -835,7 +823,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Модальное окно для фото в /send
     if (id.startsWith('send_modal_')) {
       const userId = id.replace('send_modal_', '');
       const photoUrl = interaction.fields.getTextInputValue('photo_url');
@@ -905,7 +892,6 @@ client.on('interactionCreate', async interaction => {
   
   // ========== КОМАНДЫ С ПАРАМЕТРАМИ ==========
   if (interaction.isCommand()) {
-    // /warn @user 7 Причина [Отработка]
     if (interaction.commandName === 'warn') {
       if (!hasStaff) return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
       
@@ -967,7 +953,6 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // /unwarn @user
     if (interaction.commandName === 'unwarn') {
       if (!hasStaff) return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
       
