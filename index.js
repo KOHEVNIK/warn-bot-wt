@@ -11,9 +11,26 @@ const client = new Client({
   ]
 });
 
+// Время запуска бота
+const startTime = Date.now();
+
 // Хранилища
 const pendingSends = new Collection(); // Для /send
 const events = new Collection();       // Для /event
+
+// ========== ФОРМАТИРОВАНИЕ ВРЕМЕНИ РАБОТЫ ==========
+function getUptime() {
+  const diff = Date.now() - startTime;
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  
+  let result = '';
+  if (days > 0) result += `${days}д `;
+  if (hours > 0) result += `${hours}ч `;
+  result += `${minutes}м`;
+  return result;
+}
 
 // ========== ОЧИСТКА ПРОСРОЧЕННЫХ ВАРНОВ ==========
 async function cleanExpiredWarns(guild) {
@@ -90,29 +107,13 @@ async function sendLog(guild, embed) {
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
   
-  // Статус бота — всегда ❤️
-  client.user.setActivity('❤️', { type: 2 });
+  // Статус с аптаймом
+  setInterval(() => {
+    client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
+  }, 60000); // Обновляем каждую минуту
   
-  // Анимация никнейма "Winter Team" ↔ "№1" (каждые 5 секунд)
-  const nicknames = ['Winter Team', '№1'];
-  let nickIndex = 0;
-  
-  setInterval(async () => {
-    try {
-      const cfg = getConfig();
-      const guild = client.guilds.cache.get(cfg.guildId);
-      if (guild) {
-        const me = guild.members.me;
-        if (me) {
-          await me.setNickname(nicknames[nickIndex]);
-          console.log(`📝 Никнейм изменён на: ${nicknames[nickIndex]}`);
-        }
-      }
-      nickIndex = (nickIndex + 1) % nicknames.length;
-    } catch (error) {
-      console.error('❌ Ошибка смены никнейма:', error);
-    }
-  }, 5000);
+  // Начальная установка статуса
+  client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
   
   const cfg = getConfig();
   const guild = client.guilds.cache.get(cfg.guildId);
