@@ -11,8 +11,9 @@ const client = new Client({
   ]
 });
 
-// Хранилище для временных данных отправки
-const pendingSends = new Collection();
+// Хранилища
+const pendingSends = new Collection(); // Для /send
+const events = new Collection();       // Для /event
 
 // ========== ОЧИСТКА ПРОСРОЧЕННЫХ ВАРНОВ ==========
 async function cleanExpiredWarns(guild) {
@@ -106,11 +107,14 @@ client.once('ready', async () => {
     console.log('✅ Проверка варнов выполнена');
   }
   
-  // Периодическая очистка (каждые 10 минут)
+  // Периодическая очистка варнов (каждые 10 минут)
   setInterval(async () => {
     const g = client.guilds.cache.get(cfg.guildId);
     if (g) await cleanExpiredWarns(g);
   }, 10 * 60 * 1000);
+  
+  // Восстановление таймеров событий (если бот перезапустился)
+  // (Для простоты не сохраняем события между перезапусками)
   
   // Регистрация команд
   try {
@@ -135,12 +139,21 @@ client.once('ready', async () => {
       { name: 'warnpanel', description: 'Создать панель управления варнами' },
       {
         name: 'send',
-        description: 'Отправить сообщение от имени бота в канал (поддерживает # ## ### заголовки)',
+        description: 'Отправить сообщение от имени бота в канал (поддерживает # ## ###)',
         options: [
           { name: 'channel', description: 'Канал для отправки', type: 7, required: true },
           { name: 'text', description: 'Текст сообщения (можно # Заголовок)', type: 3, required: false },
           { name: 'name', description: 'Имя отправителя (по умолч. Winter Team)', type: 3, required: false },
           { name: 'avatar', description: 'Ссылка на аватарку', type: 3, required: false }
+        ]
+      },
+      {
+        name: 'event',
+        description: 'Создать событие с кнопками подтверждения',
+        options: [
+          { name: 'date', description: 'Дата в формате ДД.ММ.ГГГГ', type: 3, required: true },
+          { name: 'time', description: 'Время в формате ЧЧ:ММ (МСК)', type: 3, required: true },
+          { name: 'description', description: 'Описание события', type: 3, required: true }
         ]
       }
     ]);
@@ -206,7 +219,6 @@ client.on('interactionCreate', async interaction => {
     
     pendingSends.set(interaction.user.id, sendData);
     
-    // Показываем превью текста с заголовками
     const previewText = text || '(без текста)';
     
     await interaction.reply({
@@ -216,10 +228,183 @@ client.on('interactionCreate', async interaction => {
     });
   }
   
+  // ========== КОМАНДА /event ==========
+  if (interaction.isCommand() && interaction.commandName === 'event') {
+    const dateStr = interaction.options.getString('date');
+    const timeStr = interaction.options.getString('time');
+    const description = interaction.options.getString('description');
+    
+    // Проверка формата даты (ДД.ММ.ГГГГ)
+    const dateMatch = dateStr.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if (!dateMatch) {
+      return interaction.reply({ content: '❌ Неверный формат даты! Используйте ДД.ММ.ГГГГ (например, 25.04.2026)', ephemeral: true });
+    }
+    
+    // Проверка формата времени (ЧЧ:ММ)
+    const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+    if (!timeMatch) {
+      return interaction.reply({ content: '❌ Неверный формат времени! Используйте ЧЧ:ММ (например, 20:00)', ephemeral: true });
+    }
+    
+    const day = parseInt(dateMatch[1]);
+    const month = parseInt(dateMatch[2]);
+    const year = parseInt(dateMatch[3]);
+    const hours = parseInt(timeMatch[1]);
+    const minutes = parseInt(timeMatch[2]);
+    
+    if (day < 1 || day > 31 || month < 1 || month > 12) {
+      return interaction.reply({ content: '❌ Неверная дата!', ephemeral: true });
+    }
+    
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      return interaction.reply({ content: '❌ Неверное время! Часы: 0-23, минуты: 0-59', ephemeral: true });
+    }
+    
+    // Создаём дату события (МСК = UTC+3)
+    const eventTime = new Date(Date.UTC(year, month - 1, day, hours - 3, minutes, 0));
+    
+    const now = new Date();
+    if (eventTime < now) {
+      return interaction.reply({ content: '❌ Нельзя создать событие в прошлом!', ephemeral: true });
+    }
+    
+    // Время напоминания (за 15 минут)
+    const reminderTime = new Date(eventTime.getTime() - 15 * 60 * 1000);
+    
+    await interaction.deferReply();
+    
+    // Создаём кнопки
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`event_accept`).setLabel('Приду').setEmoji('✅').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`event_decline`).setLabel('Не приду').setEmoji('❌').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`event_maybe`).setLabel('Возможно').setEmoji('❓').setStyle(ButtonStyle.Secondary)
+    );
+    
+    // Создаём Embed
+    const embed = new EmbedBuilder()
+      .setTitle('📅 СОБЫТИЕ')
+      .setDescription(`### ${description}`)
+      .addFields(
+        { name: '📅 Дата', value: dateStr, inline: true },
+        { name: '🕐 Время', value: `${timeStr} МСК`, inline: true },
+        { name: '🔔 Напоминание', value: 'За 15 минут', inline: true },
+        { name: '✅ Придут (0)', value: '―', inline: true },
+        { name: '❌ Не придут (0)', value: '―', inline: true },
+        { name: '❓ Возможно (0)', value: '―', inline: true }
+      )
+      .setColor(0x3498DB)
+      .setFooter({ text: `Создал: ${interaction.user.tag}` })
+      .setTimestamp();
+    
+    const message = await interaction.channel.send({ embeds: [embed], components: [row] });
+    
+    // Сохраняем событие
+    const eventId = message.id;
+    events.set(eventId, {
+      messageId: message.id,
+      channelId: interaction.channel.id,
+      guildId: interaction.guild.id,
+      description: description,
+      dateStr: dateStr,
+      timeStr: timeStr,
+      eventTime: eventTime.getTime(),
+      reminderTime: reminderTime.getTime(),
+      accept: new Set(),
+      decline: new Set(),
+      maybe: new Set(),
+      embed: embed
+    });
+    
+    // Таймер на напоминание
+    const timeUntilReminder = reminderTime.getTime() - Date.now();
+    if (timeUntilReminder > 0) {
+      setTimeout(async () => {
+        const event = events.get(eventId);
+        if (!event) return;
+        
+        const channel = await client.channels.fetch(event.channelId).catch(() => null);
+        if (!channel) return;
+        
+        const usersToPing = [...event.accept, ...event.maybe];
+        
+        if (usersToPing.length > 0) {
+          const mentions = usersToPing.map(id => `<@${id}>`).join(' ');
+          await channel.send({
+            content: `${mentions}\n🔔 **Напоминание!** Через 15 минут: **${event.description}**`
+          });
+        } else {
+          await channel.send({
+            content: `🔔 **Напоминание!** Через 15 минут: **${event.description}**\nПока никто не подтвердил участие.`
+          });
+        }
+        
+        // Удаляем событие из хранилища через час после напоминания
+        setTimeout(() => events.delete(eventId), 60 * 60 * 1000);
+      }, timeUntilReminder);
+    }
+    
+    await interaction.editReply({ content: `✅ Событие создано! ${message.url}`, ephemeral: true });
+  }
+  
   // ========== КНОПКИ ==========
   if (interaction.isButton()) {
     const id = interaction.customId;
     
+    // === КНОПКИ СОБЫТИЙ ===
+    if (id === 'event_accept' || id === 'event_decline' || id === 'event_maybe') {
+      const messageId = interaction.message.id;
+      const event = events.get(messageId);
+      
+      if (!event) {
+        return interaction.reply({ content: '❌ Это событие уже неактивно!', ephemeral: true });
+      }
+      
+      const userId = interaction.user.id;
+      
+      // Удаляем пользователя из всех списков
+      event.accept.delete(userId);
+      event.decline.delete(userId);
+      event.maybe.delete(userId);
+      
+      // Добавляем в нужный список
+      if (id === 'event_accept') {
+        event.accept.add(userId);
+      } else if (id === 'event_decline') {
+        event.decline.add(userId);
+      } else if (id === 'event_maybe') {
+        event.maybe.add(userId);
+      }
+      
+      // Формируем списки для отображения
+      const acceptList = event.accept.size > 0 
+        ? [...event.accept].map(id => `<@${id}>`).join('\n') 
+        : '―';
+      const declineList = event.decline.size > 0 
+        ? [...event.decline].map(id => `<@${id}>`).join('\n') 
+        : '―';
+      const maybeList = event.maybe.size > 0 
+        ? [...event.maybe].map(id => `<@${id}>`).join('\n') 
+        : '―';
+      
+      // Обновляем Embed
+      const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+        .setFields(
+          { name: '📅 Дата', value: event.dateStr, inline: true },
+          { name: '🕐 Время', value: `${event.timeStr} МСК`, inline: true },
+          { name: '🔔 Напоминание', value: 'За 15 минут', inline: true },
+          { name: `✅ Придут (${event.accept.size})`, value: acceptList, inline: true },
+          { name: `❌ Не придут (${event.decline.size})`, value: declineList, inline: true },
+          { name: `❓ Возможно (${event.maybe.size})`, value: maybeList, inline: true }
+        );
+      
+      await interaction.update({ embeds: [updatedEmbed] });
+      
+      event.embed = updatedEmbed;
+      events.set(messageId, event);
+      return;
+    }
+    
+    // === КНОПКИ ВАРНОВ ===
     // Выдать варн
     if (id === 'panel_warn') {
       if (!hasStaff) return interaction.reply({ content: '❌ Нет прав!', ephemeral: true });
@@ -340,7 +525,8 @@ client.on('interactionCreate', async interaction => {
       setTimeout(() => interaction.channel.delete().catch(() => {}), 2000);
     }
     
-    // Кнопка "Прикрепить фото" для /send
+    // === КНОПКИ /send ===
+    // Прикрепить фото
     if (id.startsWith('send_photo_')) {
       const userId = id.replace('send_photo_', '');
       if (interaction.user.id !== userId) {
@@ -361,7 +547,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
-    // Кнопка "Отправить сейчас" для /send
+    // Отправить сейчас
     if (id.startsWith('send_now_')) {
       const userId = id.replace('send_now_', '');
       if (interaction.user.id !== userId) {
@@ -383,7 +569,6 @@ client.on('interactionCreate', async interaction => {
           avatar: sendData.avatarUrl
         });
         
-        // Отправляем Embed с текстом (поддерживает # ## ### заголовки)
         const embed = new EmbedBuilder()
           .setColor(0x2B2D31)
           .setDescription(sendData.text || '​');
@@ -653,7 +838,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
-    // Модальное окно для фото в /send (С РАМКОЙ И ЗАГОЛОВКАМИ)
+    // Модальное окно для фото в /send
     if (id.startsWith('send_modal_')) {
       const userId = id.replace('send_modal_', '');
       const photoUrl = interaction.fields.getTextInputValue('photo_url');
@@ -696,7 +881,6 @@ client.on('interactionCreate', async interaction => {
           }
         }
         
-        // Создаём Embed с фото в рамке и текстом (поддерживает # ## ###)
         const embed = new EmbedBuilder()
           .setColor(0x2B2D31)
           .setImage(`attachment://${fileName}`)
