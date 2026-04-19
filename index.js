@@ -11,12 +11,13 @@ const client = new Client({
   ]
 });
 
-// Время запуска бота
-const startTime = Date.now();
-
 // Хранилища
 const pendingSends = new Collection(); // Для /send
 const events = new Collection();       // Для /event
+const leavePanels = new Map();         // Для панели отпусков (guildId -> channelId)
+
+// Время запуска бота
+const startTime = Date.now();
 
 // ========== ФОРМАТИРОВАНИЕ ВРЕМЕНИ РАБОТЫ ==========
 function getUptime() {
@@ -104,15 +105,42 @@ async function sendLog(guild, embed) {
   }
 }
 
+// ========== СОЗДАНИЕ ПАНЕЛИ ОТПУСКОВ ==========
+async function createLeavePanel(channel) {
+  // Удаляем старую панель если есть
+  const messages = await channel.messages.fetch({ limit: 20 });
+  const oldPanel = messages.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('ОТПУСК / ОТСУТСТВИЕ'));
+  if (oldPanel) await oldPanel.delete().catch(() => {});
+  
+  const embed = new EmbedBuilder()
+    .setTitle('🏖️ ОТПУСК / ОТСУТСТВИЕ')
+    .setDescription(
+      '**Выберите тип отсутствия:**\n\n' +
+      '🏖️ **Отпуск** — укажите на сколько дней\n' +
+      '🚶 **Отошёл** — укажите на сколько минут/часов\n\n' +
+      'После заполнения вам будет выдана роль.'
+    )
+    .setColor(0x9B59B6)
+    .setFooter({ text: 'Нажмите на кнопку ниже' });
+  
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('leave_vacation').setLabel('Отпуск').setEmoji('🏖️').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('leave_away').setLabel('Отошёл').setEmoji('🚶').setStyle(ButtonStyle.Secondary)
+  );
+  
+  const panelMessage = await channel.send({ embeds: [embed], components: [row] });
+  
+  return panelMessage;
+}
+
 client.once('ready', async () => {
   console.log(`✅ Бот ${client.user.tag} запущен!`);
   
   // Статус с аптаймом
   setInterval(() => {
     client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
-  }, 60000); // Обновляем каждую минуту
+  }, 60000);
   
-  // Начальная установка статуса
   client.user.setActivity(`❤️ ${getUptime()}`, { type: 3 });
   
   const cfg = getConfig();
@@ -121,6 +149,16 @@ client.once('ready', async () => {
   if (guild) {
     await cleanExpiredWarns(guild);
     console.log('✅ Проверка варнов выполнена');
+    
+    // Восстановление панели отпусков
+    const savedChannelId = leavePanels.get(guild.id);
+    if (savedChannelId) {
+      const channel = await guild.channels.fetch(savedChannelId).catch(() => null);
+      if (channel) {
+        await createLeavePanel(channel);
+        console.log('✅ Панель отпусков восстановлена');
+      }
+    }
   }
   
   // Периодическая очистка варнов (каждые 10 минут)
@@ -168,6 +206,13 @@ client.once('ready', async () => {
           { name: 'time', description: 'Время в формате ЧЧ:ММ (МСК)', type: 3, required: true },
           { name: 'description', description: 'Описание события', type: 3, required: true }
         ]
+      },
+      {
+        name: 'leavepanel',
+        description: 'Создать панель отпусков/отсутствия в текущем канале',
+        options: [
+          { name: 'channel', description: 'Канал для панели (по умолч. текущий)', type: 7, required: false }
+        ]
       }
     ]);
     console.log('✅ Команды зарегистрированы!');
@@ -180,6 +225,27 @@ client.on('interactionCreate', async interaction => {
   const cfg = getConfig();
   const hasStaff = interaction.member?.roles?.cache?.has(cfg.staffRoleId) || 
                    interaction.member?.permissions?.has(PermissionFlagsBits.Administrator);
+  
+  // ========== КОМАНДА /leavepanel ==========
+  if (interaction.isCommand() && interaction.commandName === 'leavepanel') {
+    if (!hasStaff) {
+      return interaction.reply({ content: '❌ У вас нет прав!', ephemeral: true });
+    }
+    
+    const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+    
+    if (!targetChannel.isTextBased()) {
+      return interaction.reply({ content: '❌ Канал должен быть текстовым!', ephemeral: true });
+    }
+    
+    // Создаём панель
+    await createLeavePanel(targetChannel);
+    
+    // Сохраняем канал
+    leavePanels.set(interaction.guild.id, targetChannel.id);
+    
+    await interaction.reply({ content: `✅ Панель создана в ${targetChannel}!`, ephemeral: true });
+  }
   
   // ========== КОМАНДА /warnpanel ==========
   if (interaction.isCommand() && interaction.commandName === 'warnpanel') {
@@ -351,6 +417,59 @@ client.on('interactionCreate', async interaction => {
   // ========== КНОПКИ ==========
   if (interaction.isButton()) {
     const id = interaction.customId;
+    
+    // === КНОПКИ ОТПУСКА ===
+    if (id === 'leave_vacation' || id === 'leave_away') {
+      const type = id === 'leave_vacation' ? 'отпуск' : 'отошёл';
+      const emoji = id === 'leave_vacation' ? '🏖️' : '🚶';
+      
+      const modal = new ModalBuilder()
+        .setCustomId(`leave_modal_${id}`)
+        .setTitle(`${emoji} ${id === 'leave_vacation' ? 'Отпуск' : 'Отошёл'}`);
+      
+      const timeLabel = id === 'leave_vacation' ? 'На сколько дней?' : 'На сколько минут/часов? (укажите число)';
+      const timePlaceholder = id === 'leave_vacation' ? 'Например: 7' : 'Например: 30 (минут) или 2 (часа)';
+      
+      const timeInput = new TextInputBuilder()
+        .setCustomId('time')
+        .setLabel(timeLabel)
+        .setPlaceholder(timePlaceholder)
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(4);
+      
+      const reasonInput = new TextInputBuilder()
+        .setCustomId('reason')
+        .setLabel(id === 'leave_vacation' ? 'Причина (необязательно)' : 'Причина (необязательно)')
+        .setPlaceholder(id === 'leave_vacation' ? 'Уезжаю в отпуск...' : 'Отошёл по делам...')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(false)
+        .setMaxLength(200);
+      
+      // Для "отошёл" добавляем выбор единицы времени
+      if (id === 'leave_away') {
+        const unitInput = new TextInputBuilder()
+          .setCustomId('unit')
+          .setLabel('Единица: минуты или часы? (мин/час)')
+          .setPlaceholder('мин или час')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(4);
+        
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(timeInput),
+          new ActionRowBuilder().addComponents(unitInput),
+          new ActionRowBuilder().addComponents(reasonInput)
+        );
+      } else {
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(timeInput),
+          new ActionRowBuilder().addComponents(reasonInput)
+        );
+      }
+      
+      await interaction.showModal(modal);
+    }
     
     // === КНОПКИ СОБЫТИЙ ===
     if (id === 'event_accept' || id === 'event_decline' || id === 'event_maybe') {
@@ -589,6 +708,211 @@ client.on('interactionCreate', async interaction => {
   if (interaction.isModalSubmit()) {
     const id = interaction.customId;
     
+    // === ОТПУСК / ОТОШЁЛ ===
+    if (id.startsWith('leave_modal_')) {
+      const type = id.replace('leave_modal_', '');
+      const timeInput = interaction.fields.getTextInputValue('time');
+      const reason = interaction.fields.getTextInputValue('reason') || null;
+      
+      await interaction.deferReply({ ephemeral: true });
+      
+      if (type === 'leave_vacation') {
+        // ОТПУСК
+        const days = parseInt(timeInput);
+        if (isNaN(days) || days <= 0) {
+          return interaction.editReply('❌ Укажите корректное количество дней!');
+        }
+        
+        try {
+          const member = interaction.member;
+          const today = new Date();
+          const endDate = new Date(today);
+          endDate.setDate(today.getDate() + days);
+          
+          const dateStr = `${endDate.getDate().toString().padStart(2, '0')}.${(endDate.getMonth()+1).toString().padStart(2, '0')}.${endDate.getFullYear()}`;
+          
+          // Создаём роль
+          const roleName = `🏖️ Отпуск до ${dateStr}`;
+          let leaveRole = interaction.guild.roles.cache.find(r => r.name === roleName);
+          if (!leaveRole) {
+            leaveRole = await interaction.guild.roles.create({
+              name: roleName,
+              color: 0x9B59B6,
+              reason: `Отпуск для ${member.user.tag}`
+            });
+          }
+          
+          // Удаляем старые роли отпуска
+          const oldLeaveRoles = member.roles.cache.filter(r => r.name.startsWith('🏖️ Отпуск до'));
+          for (const role of oldLeaveRoles.values()) {
+            await member.roles.remove(role).catch(() => {});
+          }
+          
+          await member.roles.add(leaveRole);
+          
+          // Удаляем старую панель
+          const messages = await interaction.channel.messages.fetch({ limit: 20 });
+          const oldPanel = messages.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('ОТПУСК / ОТСУТСТВИЕ'));
+          if (oldPanel) await oldPanel.delete().catch(() => {});
+          
+          // Отправляем информацию об отпуске
+          const embed = new EmbedBuilder()
+            .setTitle('🏖️ ОТПУСК')
+            .setDescription(`**${member.user.tag}** ушёл в отпуск`)
+            .addFields(
+              { name: '📅 Вернётся', value: dateStr, inline: true },
+              { name: '⏰ Дней', value: `${days}`, inline: true }
+            )
+            .setColor(0x9B59B6)
+            .setTimestamp();
+          
+          if (reason) {
+            embed.addFields({ name: '📝 Причина', value: reason, inline: false });
+          }
+          
+          await interaction.channel.send({ embeds: [embed] });
+          
+          // Создаём новую панель
+          await createLeavePanel(interaction.channel);
+          
+          // Уведомление в ЛС
+          try {
+            await member.send({
+              embeds: [new EmbedBuilder()
+                .setTitle('🏖️ Вы ушли в отпуск')
+                .setColor(0x9B59B6)
+                .setDescription(`**Вернётесь:** ${dateStr}\n**Дней:** ${days}${reason ? `\n**Причина:** ${reason}` : ''}`)
+              ]
+            });
+          } catch (error) {}
+          
+          await interaction.editReply({ content: `✅ Вы ушли в отпуск до ${dateStr}!`, ephemeral: true });
+          
+          // Таймер на снятие роли
+          const timeUntilReturn = endDate.getTime() - Date.now();
+          if (timeUntilReturn > 0) {
+            setTimeout(async () => {
+              try {
+                const m = await interaction.guild.members.fetch(member.id).catch(() => null);
+                if (m) {
+                  await m.roles.remove(leaveRole).catch(() => {});
+                  if (leaveRole.members.size === 0) {
+                    await leaveRole.delete().catch(() => {});
+                  }
+                }
+              } catch (error) {}
+            }, timeUntilReturn);
+          }
+          
+        } catch (error) {
+          console.error('❌ Ошибка отпуска:', error);
+          await interaction.editReply('❌ Произошла ошибка!');
+        }
+        
+      } else if (type === 'leave_away') {
+        // ОТОШЁЛ
+        const time = parseInt(timeInput);
+        if (isNaN(time) || time <= 0) {
+          return interaction.editReply('❌ Укажите корректное время!');
+        }
+        
+        const unitInput = interaction.fields.getTextInputValue('unit').toLowerCase();
+        let minutes = 0;
+        let displayTime = '';
+        
+        if (unitInput.includes('час') || unitInput === 'ч' || unitInput === 'h') {
+          minutes = time * 60;
+          displayTime = `${time} час${time === 1 ? '' : 'ов'}`;
+        } else if (unitInput.includes('мин') || unitInput === 'м' || unitInput === 'm') {
+          minutes = time;
+          displayTime = `${time} минут${time === 1 ? 'а' : ''}`;
+        } else {
+          return interaction.editReply('❌ Укажите "мин" или "час" в поле единицы!');
+        }
+        
+        try {
+          const member = interaction.member;
+          const returnTime = new Date(Date.now() + minutes * 60 * 1000);
+          const timeStr = `${returnTime.getHours().toString().padStart(2, '0')}:${returnTime.getMinutes().toString().padStart(2, '0')}`;
+          
+          // Создаём роль
+          const roleName = `🚶 Отошёл до ${timeStr}`;
+          let leaveRole = interaction.guild.roles.cache.find(r => r.name === roleName);
+          if (!leaveRole) {
+            leaveRole = await interaction.guild.roles.create({
+              name: roleName,
+              color: 0x95A5A6,
+              reason: `Отошёл для ${member.user.tag}`
+            });
+          }
+          
+          // Удаляем старые роли "отошёл"
+          const oldAwayRoles = member.roles.cache.filter(r => r.name.startsWith('🚶 Отошёл до'));
+          for (const role of oldAwayRoles.values()) {
+            await member.roles.remove(role).catch(() => {});
+          }
+          
+          await member.roles.add(leaveRole);
+          
+          // Удаляем старую панель
+          const messages = await interaction.channel.messages.fetch({ limit: 20 });
+          const oldPanel = messages.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('ОТПУСК / ОТСУТСТВИЕ'));
+          if (oldPanel) await oldPanel.delete().catch(() => {});
+          
+          // Отправляем информацию
+          const embed = new EmbedBuilder()
+            .setTitle('🚶 ОТОШЁЛ')
+            .setDescription(`**${member.user.tag}** отошёл`)
+            .addFields(
+              { name: '🕐 Вернётся примерно', value: timeStr, inline: true },
+              { name: '⏰ Время', value: displayTime, inline: true }
+            )
+            .setColor(0x95A5A6)
+            .setTimestamp();
+          
+          if (reason) {
+            embed.addFields({ name: '📝 Причина', value: reason, inline: false });
+          }
+          
+          await interaction.channel.send({ embeds: [embed] });
+          
+          // Создаём новую панель
+          await createLeavePanel(interaction.channel);
+          
+          // Уведомление в ЛС
+          try {
+            await member.send({
+              embeds: [new EmbedBuilder()
+                .setTitle('🚶 Вы отошли')
+                .setColor(0x95A5A6)
+                .setDescription(`**Вернётесь примерно:** ${timeStr}\n**Время:** ${displayTime}${reason ? `\n**Причина:** ${reason}` : ''}`)
+              ]
+            });
+          } catch (error) {}
+          
+          await interaction.editReply({ content: `✅ Вы отошли до ${timeStr}!`, ephemeral: true });
+          
+          // Таймер на снятие роли
+          setTimeout(async () => {
+            try {
+              const m = await interaction.guild.members.fetch(member.id).catch(() => null);
+              if (m) {
+                await m.roles.remove(leaveRole).catch(() => {});
+                if (leaveRole.members.size === 0) {
+                  await leaveRole.delete().catch(() => {});
+                }
+              }
+            } catch (error) {}
+          }, minutes * 60 * 1000);
+          
+        } catch (error) {
+          console.error('❌ Ошибка отошёл:', error);
+          await interaction.editReply('❌ Произошла ошибка!');
+        }
+      }
+    }
+    
+    // === Снятие варнов ===
     if (id === 'unwarn_modal') {
       const userInput = interaction.fields.getTextInputValue('user');
       
@@ -630,6 +954,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
+    // === Выдача варна ===
     if (id === 'warn_modal') {
       const userInput = interaction.fields.getTextInputValue('user');
       const daysInput = interaction.fields.getTextInputValue('days');
@@ -696,6 +1021,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
+    // === Обжалование ===
     if (id === 'appeal_modal') {
       const reason = interaction.fields.getTextInputValue('reason');
       
@@ -760,6 +1086,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
+    // === Отработка ===
     if (id === 'workoff_modal') {
       const reason = interaction.fields.getTextInputValue('reason');
       
@@ -824,6 +1151,7 @@ client.on('interactionCreate', async interaction => {
       }
     }
     
+    // === Модальное окно для фото в /send ===
     if (id.startsWith('send_modal_')) {
       const userId = id.replace('send_modal_', '');
       const photoUrl = interaction.fields.getTextInputValue('photo_url');
